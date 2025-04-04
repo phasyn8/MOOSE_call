@@ -22,6 +22,11 @@ class mooseCall(object):
     def __init__(self, filename, file_path, mesh_path, version, parameters_df, surface_elev, **kwargs):
         #Keyword Args assingment
             
+            if kwargs.get("density_dict") == None:
+                self.density_dict = {}
+            else:
+                self.density_dict = kwargs.get("density_dict")
+
             if kwargs.get("stress_tensor") == None:
                 self.stress_tensor = np.eye(3)
             else:
@@ -49,11 +54,22 @@ class mooseCall(object):
             # Pull Surface and Volume parameters from a mesh dataframe.    
             self.parameters = parameters_df
 
-            self.all_meshBlocks = combine_columns_to_string(df=parameters_df, index=0, columns=[parameters_df.loc[:, parameters_df.columns.str.contains("Volumes")]])
-            self.fault_meshBlocks = combine_columns_to_string(df=parameters_df, index=0, columns=[" ******** ALL faults meshBLOCKS ********* "])
-            
+            vol_list = parameters_df.loc[:, meshLOG.columns.str.contains("Volumes")].columns.tolist()
+            #meshLOG[vol_list[0]]  # this prints the volume list
+            #vol_list = meshLOG.loc[:, meshLOG.columns.str.contains("Volumes")].columns.tolist()
+            #meshLOG[vol_list]
 
-            self.stress_tensor = stress_tensor
+            self.all_meshBlocks = combine_columns_to_string(df=parameters_df, index=0, columns=vol_list)
+            self.fault_meshBlocks = [] # This needs to be populated from the meshblock builder
+            self.surface_meshBlocks = [] # This needs to be populated from the meshblock builder
+
+            self.current_blockID = 10000 # starts at an arbitrarily high number to avoid conflict with the fragmented meshblocks
+
+            azimuth_deg = parameters_df['Azimuth SHMax']
+            k_h = parameters_df['Sv ratio k_Shmin']
+            k_H = parameters_df['Sv ratio K_SHMax']
+
+            self.stress_tensor = XYZ_stress_tensor(azimuth_deg=azimuth_deg, z=-1, rho=1, g=9.81, k_H=k_H, k_h=k_h, print_output=False)
 
 
                 #use this to parse a dictionary input...
@@ -76,7 +92,87 @@ class mooseCall(object):
          
          return self.parameters
 
-         
+    #######    STRESS TENSOR CALC    ###### 
+
+    def XYZ_stress_tensor(azimuth_deg, z, rho, g=9.81, k_H=0.6, k_h=0.4, print_output=False):
+        """
+        Generalized stress tensor as a function of depth, considering faulting regimes
+        and aligning the tensor with the azimuth of the maximum principal horizontal stress.
+        #### IMPORTANT: THIS OUTPUTS A STRESS TENSOR THAT CONFORMS TO AN [ X Y Z ] COORDINATE SPACE #### 
+        #### MANY TEXTBOOK EXAMPLES USE A NorthEastDown (NED) system e.g. Zoback 2010
+        
+        Parameters:
+        z (float): Depth (negative meters below the surface).
+        rho (float): Density of the overburden rock (kg/m^3).
+        azimuth (float): Azimuth of maximum horizontal stress (degrees clockwise from north), North parallel with Y axis.
+        g (float): Gravitational acceleration (m/s^2), default is 9.81 m/s^2. # this is not used in this version, was important for backwards compatibility
+        k_H (float): Proportionality constant for maximum horizontal stress (relative to vertical stress).
+        k_h (float): Proportionality constant for minimum horizontal stress (relative to vertical stress).
+        
+        Returns:
+        rotated_tensor (numpy.ndarray): 3x3 rotated stress tensor matrix based on the faulting regime in [X Y Z} coordinate space.
+        """
+        if z >= 0:
+            raise ValueError("Depth (z) should be a negative value representing meters below the surface")
+        if print_output:
+            print("Azi, SHMax: ", azimuth_deg)
+        azimuth_deg = azimuth_deg+90
+        # Calculate vertical stress due to gravity
+        sigma_v = rho * (z)#rho * g * (-z)  # Vertical stress increases with depth
+        
+        # Calculate horizontal stresses
+        sigma_H = k_H * sigma_v   # Maximum horizontal stress
+        sigma_h = k_h * sigma_v   # Minimum horizontal stress
+        if print_output:
+            print("Sigma_H - K : ", sigma_H)
+            print("Sigma_h - k : ", sigma_h)
+            print("Sigma V: ", sigma_v)
+        
+        azimuth_rad = np.radians((azimuth_deg))
+        # Determine the faulting regime
+        if sigma_v < sigma_H < sigma_h:
+            # Normal faulting regime: σ1 = σv, σ2 = σH, σ3 = σh
+            sigma_xx, sigma_yy, sigma_zz = sigma_v, sigma_H, sigma_h
+            alpha, beta, gamma = np.radians(azimuth_deg-90), np.radians(90), np.radians(0)
+        elif sigma_H < sigma_v < sigma_h:
+            # Strike-slip faulting regime: σ1 = σH, σ2 = σv, σ3 = σh
+            sigma_xx, sigma_yy, sigma_zz = sigma_H, sigma_v, sigma_h
+            alpha, beta, gamma = azimuth_rad, np.radians(0), np.radians(90)
+        elif sigma_H < sigma_h < sigma_v:
+            # Reverse faulting regime: σ1 = σH, σ2 = σh, σ3 = σv
+            sigma_xx, sigma_yy, sigma_zz = sigma_H, sigma_h, sigma_v
+            alpha, beta, gamma = azimuth_rad, np.radians(0), np.radians(0)
+        else:
+            raise ValueError("Invalid stress regime detected. Check input parameters.")
+        
+        # Assume no shear stresses (off-diagonal terms = 0)
+        sigma_xy = sigma_xz = sigma_yz = 0.0
+        
+        # Build the initial stress tensor in the global coordinate system
+        stress_tensor = np.array([
+            [sigma_xx, sigma_xy, sigma_xz],
+            [sigma_xy, sigma_yy, sigma_yz],
+            [sigma_xz, sigma_yz, sigma_zz]
+        ])
+        if print_output:
+            print("Principle Stress Tensor: \n",stress_tensor.round(3))
+        # Convert azimuth to radians
+        
+        
+        # Define the rotation matrix for the azimuth
+        rotation_matrix = np.array([
+            [np.cos(alpha)*np.cos(beta), np.sin(alpha)*np.cos(beta), -np.sin(beta)],
+            [(np.cos(alpha)*np.sin(beta)*np.sin(gamma)) - (np.sin(alpha)*np.cos(gamma)),  (np.sin(alpha)*np.sin(beta)*np.sin(gamma)) + (np.cos(alpha)*np.cos(gamma)), (np.cos(beta)*np.sin(gamma))],
+            [(np.cos(alpha)*np.sin(beta)*np.cos(gamma)) + (np.sin(alpha)*np.sin(gamma)),  (np.sin(alpha)*np.sin(beta)*np.cos(gamma)) - (np.cos(alpha)*np.sin(gamma)), (np.cos(beta)*np.cos(gamma))]
+        ])
+        if print_output:
+            print("Rotation Matrix: \n", rotation_matrix.round(3))
+        # Rotate the stress tensor to align with the azimuth
+        rotated_tensor = rotation_matrix.T @ stress_tensor @ rotation_matrix
+        if print_output:
+            print("Rotated Matrix: \n",rotated_tensor.round(3))
+        return rotated_tensor
+
 
     #######    String formatting functions   
 
@@ -106,13 +202,110 @@ class mooseCall(object):
             #print(boundary_list)
             return boundary_list
 
+#+++++++++++++++++++++++ THIS IS THE START OF THE SIMULATION TEMPLATES +++++++++++++++++++++++++++
+    
+    def preGravity_stress(self):
+        """
+        {self.headerBlock}
+        {self.globalBlock}
+        {self.meshBlock}
+        {self.varsBlock}
+        {self.auxVarsBlock}
+        {self.physicsBlock}
+        {self.kernelsBlock}
+        {self.auxKernelsBlock}  
+        {self.bcBlock}
+        {self.functionBlock}
+        {self.icBlock}
+        {self.materialBlock}
+        {self.userobjectBlock}
+        {self.postBlock}
+        {self.preconditionBlock}
+        {self.execBlock}
+        {self.outputBlock}
+        """
+        
+        # Simulation blocks construction
+        general_headers_Blk(self)
+        general_globals_Blk(self)
+        ###### MESH BLOCK #####
+        general_varaibles_Blk(self)
+        preGravity_AuxVars_Blk(self)
+        solidMech_quasiStatic_physics_Blk(self)
+        preGravity_Kernels_Blk(self)
+        preGravity_AuxKernels_Blk(self)
+        atmos_geomech_BC_Blk(self)
+        no_functions_Blk(self)
+        no_ic_Blk(self)
+        preGravity_Projected_Stress_materials_Blk(self, density_dict=self.density_dict)
+        no_UO_Blk(self)
+        no_PostProcessor(self)
+        precond_Blk(self)
+        general_headers_Blk(self)
+        output_Block(self, exodus=True, csv=False, csv_deliminator=',')
+        
+        # combine and write MOOSE input
+        moosebuilder(self)
+
+
+
+    def fault_stability_projected_stress_sim(self):
+        
+        """
+        {self.headerBlock}
+        {self.globalBlock}
+        {self.meshBlock}
+        {self.varsBlock}
+        {self.auxVarsBlock}
+        {self.physicsBlock}
+        {self.kernelsBlock}
+        {self.auxKernelsBlock}  
+        {self.bcBlock}
+        {self.functionBlock}
+        {self.icBlock}
+        {self.materialBlock}
+        {self.userobjectBlock}
+        {self.postBlock}
+        {self.preconditionBlock}
+        {self.execBlock}
+        {self.outputBlock}
+        """
+        
+        # Simulation blocks construction
+        general_headers_Blk(self)
+        general_globals_Blk(self)
+        generalized_mesher_mesh_Blk(self)
+        general_varaibles_Blk(self)
+        postGravity_AuxVars_Blk(self)
+        solidMech_quasiStatic_physics_Blk(self)
+        postGravity_Kernels_Blk(self)
+        postGravity_AuxKernels_Blk(self)
+        atmos_geomech_BC_Blk(self)
+        no_functions_Blk(self)
+        no_ic_Blk(self)
+        postGravity_Projected_Stress_materials_Blk(self)
+        no_UO_Blk(self)
+        no_PostProcessor(self)
+        general_precond_Blk(self)
+        transient_exec_Blk(self)
+        output_Block(self, exodus=True, csv=False, csv_deliminator=',')
+        
+        # combine and write MOOSE input
+        moosebuilder(self)
+
+        print(f"Exported {self.write_path}")
+
+
+
+
+
+#+++++++++++++++++++++++   THIS IS THE START OF THE BLOCK BUILDING TEMPLATES    +++++++++++++++++++++++++++
 
     def moosebuilder(self):
         
         """
-        Combines the input blocks into an outpu file 
+        Combines the input blocks into an input file 
         """
-        
         
         # Input Builder
 
@@ -170,6 +363,74 @@ class mooseCall(object):
         """
 #__________________________________________________________ MESH BLOCK _________________________________________________________________
 
+    def generalized_mesher_mesh_Blk(self):
+        
+        meshLOG = self.parameters
+
+
+        fault_list = meshLOG.loc[:, meshLOG.columns.str.contains("Fault_Elements")].columns.tolist()
+        fault_names = [item.split(' ')[0] for item in fault_list[0]]
+
+        surface_list = meshLOG.loc[:, meshLOG.columns.str.contains("Surface_Elements")].columns.tolist()
+        surface_names = [item.split(' ')[0] for item in surface_list[0]]
+
+        faults_lowerDBlock_list = []
+        surface_lowerDBlock_list = []
+
+        current_msh = 'msh' # this instantiates the first mesh name and will be updated for each modified mesh through the function
+
+
+        """  SURFACE LISTS """
+        for surface_name, surface_sidesets, in zip(surface_names, meshLOG[surface_list].values.tolist()):
+            next_msh = f'{fault_name}Surface'
+            surface_lowerDBlock_list.append(f"""
+                    [{next_msh}]
+                        input={current_msh}
+                        type = LowerDBlockFromSidesetGenerator
+                        new_block_id = {self.current_blockID}
+                        new_block_name = "{surface_name}_surface"
+                        sidesets = {surface_sidesets}
+                    []"""
+            )
+            self.surface_meshBlocks.append(f"{surface_name}_surface")
+            current_msh = f'{surface_name}Surface'
+            self.current_blockID = self.current_blockID+1
+
+
+        """ FAULT LISTS """
+        for fault_name, fault_sidesets, in zip(fault_names, meshLOG[fault_list].values.tolist()):
+            next_msh = f'{fault_name}Fault'
+            faults_lowerDBlock_list.append(f"""
+                    [{next_msh}]
+                        input={current_msh}
+                        type = LowerDBlockFromSidesetGenerator
+                        new_block_id = {self.current_blockID}
+                        new_block_name = "{fault_name}_fault"
+                        sidesets = {fault_sidesets}
+                    []"""
+            )
+            self.fault_meshBlocks.append(f"{fault_name}_fault")
+            current_msh = f'{fault_name}Fault'
+            self.current_blockID = self.current_blockID+1
+            
+            
+        fault_lower_dimensionalBlocks = "\n".join(faults_lowerDBlock_list) # converts the list to a formatted string
+        surface_lower_dimensionalBlocks = "\n".join(surface_lowerDBlock_list) # converts the list to a formatted string                
+            
+        self.meshBlock = f"""
+        [Mesh]
+            [msh]
+            type = FileMeshGenerator
+            file = '{self.mesh_path}'
+            #construct_side_list_from_node_list=false # FOR MESHES WITHOUT IMPLICITLY DEFINED SIDESETS
+            []
+            {surface_lower_dimensionalBlocks}
+            {fault_lower_dimensionalBlocks} 
+        []   #  ------------ END OF MESH BLOCK
+        """
+    
+    
+    
     def cal_create_tracked_mesh_block(self, dim2_elements_lists, mesh_path, meshfile, filename):
 
         """
@@ -252,6 +513,8 @@ class mooseCall(object):
         f = open(mesh_path+filename, 'w+')
         f.write(meshBlock)
         f.close()
+
+
 #__________________________________________________________ VARIABLES BLOCK _________________________________________________________________
     def general_varaibles_Blk(self):
         self.varsBlock = f"""
@@ -264,9 +527,346 @@ class mooseCall(object):
                 []
             [] # End Variables Block ============================================================================================================
             """
+#__________________________________________________________ AuxVARIABLES BLOCK _________________________________________________________________
+
+    def preGravity_AuxVars_Blk(self):
+        self.auxVarsBlock = f"""
+
+        [AuxVariables]
+
+            # Single Stress tensor components for gravitational loading only   
+
+            [stress_zz]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+
+                # Initial Stress Vars computed from Stress_ZZ due to gravitational loading
+
+                [initStressX_X]
+                    order = CONSTANT
+                    family = MONOMIAL
+                []
+                [initStressX_Y]
+                    order = CONSTANT
+                    family = MONOMIAL
+                []
+                [initStressX_Z]
+                    order = CONSTANT
+                    family = MONOMIAL
+                []
+
+                    [initStressY_X]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressY_Y]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressY_Z]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+
+                        [initStressZ_X]
+                            order = CONSTANT
+                            family = MONOMIAL
+                        []
+                        [initStressZ_Y]
+                            order = CONSTANT
+                            family = MONOMIAL
+                        []
+                        [initStressZ_Z]
+                            order = CONSTANT
+                            family = MONOMIAL
+                        []
+        [] # End AuxVariables Block =====================================================================================================
+        """
+
+    def postGravity_AuxVars_Blk(self):
+        self.auxVarsBlock = f"""
+        [AuxVariables]
+            # Stress scalers solved for element directions      
+            [normal_vec_magnitude]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [normal_stress_magnitude]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [eff_normal_stress_magnitude]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+                    [./maxprincipal]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    [../]
+                    [./midprincipal]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    [../]
+                    [./minprincipal]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    [../]
+                    [./hydrostaticRankTwo]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    [../]
+                    [./hydrostatic_FW]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    [../]
+                    [./true_ShearStress]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    [../]
+            
+                            # Element Normal vector components from porous flow module --- TODO: try to make these vector vars! ---
+                            [normal_x]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [normal_y]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [normal_z]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+
+            # Normalized normal vector components  --- TODO: try to make these vector vars! ---
+            [normal_unit_dir_x]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [normal_unit_dir_y]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [normal_unit_dir_z]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            # Tau Strike/Dip vars
+            [tau_s]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [tau_d]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+
+                    # Normal stress vector components --- TODO: try to make these vector vars! ---
+                    [normal_stress_vec_x]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [normal_stress_vec_y]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [normal_stress_vec_z]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+
+                            #Stress tensor components       
+                            [stress_xx]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [stress_yy]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [stress_zz]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [stress_xy]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [stress_xz]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [stress_yx]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [stress_yz]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [stress_zx]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                            [stress_zy]
+                                order = CONSTANT
+                                family = MONOMIAL
+                            []
+                
+
+                    # Initial Stress Vars computed from stress_ZZ due to gravitational loading in preGravity simulation
+                    [initStressXX]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressXY]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressXZ]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressYX]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressYY]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressYZ]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressZX]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressZY]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+                    [initStressZZ]
+                        order = CONSTANT
+                        family = MONOMIAL
+                    []
+
+                [./MaxShear_stress]
+                    order = CONSTANT
+                    family = MONOMIAL
+                []
+                [slip_tendency]
+                    order = CONSTANT
+                    family = MONOMIAL
+                []
+                [dilation_tendency]
+                    order = CONSTANT
+                    family = MONOMIAL
+                [
+                [fracture_suscept]
+                order = CONSTANT
+                family =] MONOMIAL
+                [] 
+
+                 
+            #Shear vector vars  ---- TODO: try to make these vector vars! -----
+            
+            [strike_x]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [strike_y]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [strike_z]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [dip_x]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [dip_y]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [dip_z]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [rake_x]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [rake_y]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [rake_z]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [rake_angle]
+                order = CONSTANT
+                family = MONOMIAL
+            [] 
+            [maxShear_angle]
+                order = CONSTANT
+                family = MONOMIAL
+            [] 
+            [shear_x]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [shear_y]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+            [shear_z]
+                order = CONSTANT
+                family = MONOMIAL
+            []
+
+        [] # End AuxVariables Block =====================================================================================================
+        """
+#__________________________________________________________ KERNELS BLOCK _________________________________________________________________
+    def preGravity_Kernels_Blk(self):
+
+        self.kernelsBlock = f"""
+            [Kernels]
+                [gravity]
+                    type = Gravity
+                    variable = disp_z
+                    value = -9.81E-6  # Gravity in MPa
+                    block = {self.all_meshBlocks}
+                []
+            [] # End Kernels Block ===============================================================================================================
+        """
+    
+    def postGravity_Kernels_Blk(self):
+
+        self.kernelsBlock = f"""
+            [Kernels]
+                #[gravity]
+                #    type = Gravity
+                #    variable = disp_z
+                #    value = -9.81E-6  # Gravity in MPa
+                #    block = {self.all_meshBlocks}
+                #[]
+            [] # End Kernels Block ===============================================================================================================
+        """
+
+
+
 #__________________________________________________________ AuxKERNELS BLOCK _________________________________________________________________
 
     def preGravity_AuxKernels_Blk(self):
+
+        K_XX, K_XY, K_XZ, K_YX, K_YY, K_YZ, K_ZX, K_ZY, K_ZZ = self.stress_tensor.ravel()
+
 
         self.auxKernelsBlock = f"""
             [AuxKernels]
@@ -287,7 +887,7 @@ class mooseCall(object):
                 type = ParsedAux
                 variable = initStressX_X
                 coupled_variables = 'stress_zz'
-                expression = 'stress_zz*{self.K_XX}' # K_h = 0.8 Sv
+                expression = 'stress_zz*{K_XX}' # e.g : K_h = 0.8 Sv
                 #execute_on = 'initial timestep_begin'
                 block = {self.all_meshBlocks}
         []
@@ -295,14 +895,14 @@ class mooseCall(object):
                 type = ParsedAux
                 variable = initStressX_Y
                 coupled_variables = 'stress_zz'
-                expression = 'stress_zz*{self.K_XY}'  # This is Zero for no shear model
+                expression = 'stress_zz*{K_XY}'  
                 block = {self.all_meshBlocks}
         []
         [init_Stress_XZ]
                 type = ParsedAux
                 variable = initStressX_Z
                 coupled_variables = 'stress_zz'
-                expression = 'stress_zz*{self.K_XZ}'  # This is Zero for no shear model
+                expression = 'stress_zz*{K_XZ}'  
                 block = {self.all_meshBlocks}
         []
 
@@ -310,21 +910,21 @@ class mooseCall(object):
                             type = ParsedAux
                             variable = initStressY_X
                             coupled_variables = 'stress_zz'
-                            expression = 'stress_zz*{self.K_YX}'  # This is Zero for no shear model
+                            expression = 'stress_zz*{K_YX}'  
                             block = {self.all_meshBlocks}
                     []
                     [init_Stress_YY]
                             type = ParsedAux
                             variable = initStressY_Y
                             coupled_variables = 'stress_zz'
-                            expression = 'stress_zz*{self.K_YY}'  # No shear here as well
+                            expression = 'stress_zz*{K_YY}' 
                             block = {self.all_meshBlocks}
                     []
                     [init_Stress_YZ]
                             type = ParsedAux
                             variable = initStressY_Z
                             coupled_variables = 'stress_zz'
-                            expression = 'stress_zz*{self.K_YZ}'  # This is Zero for no shear model
+                            expression = 'stress_zz*{K_YZ}' 
                             block = {self.all_meshBlocks}
                     []
 
@@ -332,23 +932,23 @@ class mooseCall(object):
                                         type = ParsedAux
                                         variable = initStressZ_X
                                         coupled_variables = 'stress_zz'
-                                        expression = 'stress_zz*{self.K_ZX}'  # This is Zero for no shear model
+                                        expression = 'stress_zz*{K_ZX}'  # This is Zero for no shear model as one principle stress is the Vertical stress
                                         block = {self.all_meshBlocks}
                                 []
                                 [init_Stress_ZY]
                                         type = ParsedAux
                                         variable = initStressZ_Y
                                         coupled_variables = 'stress_zz'
-                                        expression = 'stress_zz*{self.K_ZY}' # No shear here as well
+                                        expression = 'stress_zz*{K_ZY}' # No shear here as well
                                         block = {self.all_meshBlocks}
                                 []
                                 [init_stress_ZZ]
                                         type = FunctorAux
                                         functor = 'stress_zz'
                                         variable = "initStressZ_Z"
-                                        # this auxkernel must execute before the y_var functor is used
+                                        # this auxkernel must execute before the variable functor is used
                                         # in the FunctorCoordinatesFunctionAux if we want y to be up to date!
-                                        #execute_on = INITIAL
+                                        #execute_on = INITIAL # this does not have the expected result
                                 []
     
     [] # End AuxKernels Block ============================================================================================================
@@ -787,356 +1387,25 @@ class mooseCall(object):
                 []
             []  # End Physics Block =============================================================================================================
         """
-#__________________________________________________________ KERNELS BLOCK _________________________________________________________________
-    def preGravity_Blk(self):
-
-        self.kernelsBlock = f"""
-            [Kernels]
-                [gravity]
-                    type = Gravity
-                    variable = disp_z
-                    value = -9.81E-6  # Gravity in MPa
-                    block = {self.all_meshBlocks}
-                []
-            [] # End Kernels Block ===============================================================================================================
-        """
-    
-    def postGravity_Blk(self):
-
-        self.kernelsBlock = f"""
-            [Kernels]
-                #[gravity]
-                #    type = Gravity
-                #    variable = disp_z
-                #    value = -9.81E-6  # Gravity in MPa
-                #    block = {self.all_meshBlocks}
-                #[]
-            [] # End Kernels Block ===============================================================================================================
-        """
-
-#__________________________________________________________ AuxVARIABLES BLOCK _________________________________________________________________
-
-    def preGravity_AuxVars_Blk(self):
-        self.auxVarsBlock = f"""
-
-        [AuxVariables]
-
-            # Single Stress tensor components for gravitational loading only   
-
-            [stress_zz]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-
-                # Initial Stress Vars computed from Stress_ZZ due to gravitational loading
-
-                [initStressX_X]
-                    order = CONSTANT
-                    family = MONOMIAL
-                []
-                [initStressX_Y]
-                    order = CONSTANT
-                    family = MONOMIAL
-                []
-                [initStressX_Z]
-                    order = CONSTANT
-                    family = MONOMIAL
-                []
-
-                    [initStressY_X]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressY_Y]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressY_Z]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-
-                        [initStressZ_X]
-                            order = CONSTANT
-                            family = MONOMIAL
-                        []
-                        [initStressZ_Y]
-                            order = CONSTANT
-                            family = MONOMIAL
-                        []
-                        [initStressZ_Z]
-                            order = CONSTANT
-                            family = MONOMIAL
-                        []
-        [] # End AuxVariables Block =====================================================================================================
-        """
-
-    def postGravity_AuxVars_Blk(self):
-        self.auxVarsBlock = f"""
-        [AuxVariables]
-            # Stress scalers solved for element directions      
-            [normal_vec_magnitude]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [normal_stress_magnitude]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [eff_normal_stress_magnitude]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-                    [./maxprincipal]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    [../]
-                    [./midprincipal]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    [../]
-                    [./minprincipal]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    [../]
-                    [./hydrostaticRankTwo]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    [../]
-                    [./hydrostatic_FW]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    [../]
-                    [./true_ShearStress]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    [../]
-            
-                            # Element Normal vector components from porous flow module --- TODO: try to make these vector vars! ---
-                            [normal_x]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [normal_y]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [normal_z]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-
-            # Normalized normal vector components  --- TODO: try to make these vector vars! ---
-            [normal_unit_dir_x]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [normal_unit_dir_y]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [normal_unit_dir_z]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            # Tau Strike/Dip vars
-            [tau_s]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [tau_d]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-
-                    # Normal stress vector components --- TODO: try to make these vector vars! ---
-                    [normal_stress_vec_x]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [normal_stress_vec_y]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [normal_stress_vec_z]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-
-                            #Stress tensor components       
-                            [stress_xx]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [stress_yy]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [stress_zz]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [stress_xy]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [stress_xz]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [stress_yx]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [stress_yz]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [stress_zx]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                            [stress_zy]
-                                order = CONSTANT
-                                family = MONOMIAL
-                            []
-                
-
-                    # Initial Stress Vars computed from stress_ZZ due to gravitational loading in preGravity simulation
-                    [initStressXX]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressXY]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressXZ]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressYX]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressYY]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressYZ]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressZX]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressZY]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-                    [initStressZZ]
-                        order = CONSTANT
-                        family = MONOMIAL
-                    []
-
-                [./MaxShear_stress]
-                    order = CONSTANT
-                    family = MONOMIAL
-                []
-                [slip_tendency]
-                    order = CONSTANT
-                    family = MONOMIAL
-                []
-                [dilation_tendency]
-                    order = CONSTANT
-                    family = MONOMIAL
-                [
-                [fracture_suscept]
-                order = CONSTANT
-                family =] MONOMIAL
-                [] 
-
-                 
-            #Shear vector vars  ---- TODO: try to make these vector vars! -----
-            
-            [strike_x]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [strike_y]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [strike_z]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [dip_x]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [dip_y]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [dip_z]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [rake_x]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [rake_y]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [rake_z]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [rake_angle]
-                order = CONSTANT
-                family = MONOMIAL
-            [] 
-            [maxShear_angle]
-                order = CONSTANT
-                family = MONOMIAL
-            [] 
-            [shear_x]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [shear_y]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-            [shear_z]
-                order = CONSTANT
-                family = MONOMIAL
-            []
-
-        [] # End AuxVariables Block =====================================================================================================
-        """
 
 #__________________________________________________________ BOUNDARY CONDITIONS BLOCK _________________________________________________________________
 
-    def atmos_geomech_BC_Blk(self, parameters, path, filename):
+    def atmos_geomech_BC_Blk(self):
 
         """
-        Creating MOOSE mesh blocks with a list of dimention 2 lists from a fragmenting mesh building operation
+        Creating MOOSE Boundary conditions block with input from a meshLOG entry of mesh boundary elements
+
         """
 
-        xBC = combine_columns_to_string(df=parameters, index=0, columns=["West Elements","East Elements","South Elements", "North Elements", "Base Elements"])
-        yBC = combine_columns_to_string(df=parameters, index=0, columns=["West Elements","East Elements","South Elements", "North Elements", "Base Elements"])
-        zBC = combine_columns_to_string(df=parameters, index=0, columns=["Base Elements"])
-        TopBC = combine_columns_to_string(df=parameters, index=0, columns=["Top Elements"])
+        xBC = combine_columns_to_string(df=self.parameters, index=0, columns=["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
+        yBC = combine_columns_to_string(df=self.parameters, index=0, columns=["West Boundary_Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
+        zBC = combine_columns_to_string(df=self.parameters, index=0, columns=["Base Boundary_Elements"])
+        TopBC = combine_columns_to_string(df=self.parameters, index=0, columns=["Top Boundary_Elements"])
         
-        #xBC = df_picks_index[["West Elements","East Elements","South Elements", "North Elements", "Base Elements"]]
-        #yBC = df_picks_index[["West Elements","East Elements","South Elements", "North Elements", "Base Elements"]]
-        #zBC = df_picks_index[["Base Elements"]]
-        bc_Block = f"""
+        #xBC = df_picks_index[["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"]]
+        #yBC = df_picks_index[["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"]]
+        #zBC = df_picks_index[["Base Boundary_Elements"]]
+        self.bcBlock = f"""
 
         #  Must include the boundaries ( N/S , E/W , Top ) - for each X/Y displacement boundary condition, and only Bottom for Z BCs, this when gravity is used for body force
         [BCs]
@@ -1171,11 +1440,11 @@ class mooseCall(object):
         []  # End Boundary conditions Block ==================================================================================================
 
         """
-        f = open(path+filename, 'w+')
+        #f = open(path+filename, 'w+')
             
-        f.write(bc_Block)
-        f.close()
-        self.bcBlock = f"!include {filename}"
+        #f.write(bc_Block)
+        #f.close()
+        #self.bcBlock = f"!include {filename}"
 
 #__________________________________________________________ FUNCTIONS BLOCK ____________________________________________________________
    
@@ -1256,7 +1525,7 @@ class mooseCall(object):
          
 #__________________________________________________________ MATERIALS BLOCK ____________________________________________________________
         
-    def postGravity_materials_Blk(self):
+    def postGravity_Projected_stress_materials_Blk(self):
          self.materialBlock = f"""    
         [Materials]
 
@@ -1266,12 +1535,12 @@ class mooseCall(object):
             #bulk_modulus = 0.4e6
             poissons_ratio = 1E-6 #  
             compute=true
-            block = {self.all_meshBlocks} #'2 4 6 8 9 10 11 12 15 16 17'
+            block = {self.all_meshBlocks} 
         []
 
         [stress]
             type = ComputeLinearElasticStress
-            block= {self.all_meshBlocks} #'2 4 6 8 9 10 11 12 15 16 17''2 4 6 8 9 10 11 12 15 16 17'
+            block= {self.all_meshBlocks} 
         []
 
         [ini_stress]
@@ -1284,12 +1553,10 @@ class mooseCall(object):
                 block = {self.all_meshBlocks}
         [] 
 
-
-    """
+        """
     
     
-    
-    def preGravity_materials_Blk(self, density_dict={}):
+    def preGravity_Projected_Stress_materials_Blk(self, density_dict={}):
         density_list =[]
         for key, value, in density_dict.items():
             density_list.append(f"""
@@ -1312,14 +1579,14 @@ class mooseCall(object):
             #bulk_modulus = 0.4e6
             poissons_ratio = 1E-6 #  
             compute=true
-            block = {self.all_meshBlocks} #'2 4 6 8 9 10 11 12 15 16 17'
+            block = {self.all_meshBlocks}
         []
 
         {density_material_properties} 
 
         [stress]
         type = ComputeLinearElasticStress
-        block= {self.all_meshBlocks} '2 4 6 8 9 10 11 12 15 16 17'
+        block= {self.all_meshBlocks} 
         []
 
         [ini_stress]
@@ -1329,7 +1596,7 @@ class mooseCall(object):
             #Initial stress scenario: stress tensor is calculated as a factor of vertical gravitational stress, will then be the initial condition of post gravity materials block
                 initial_stress = '0 0 0 0 0 0 0 0 0'
                 initial_stress_aux = 'initStressXX initStressXY initStressXZ initStressYX initStressYY initStressYZ initStressZX initStressZY initStressZZ'
-                block = {self.all_meshBlocks} #'2 4 6 8 9 10 11 12 15 16 17'
+                block = {self.all_meshBlocks} 
         [] 
 
 
@@ -1407,7 +1674,7 @@ class mooseCall(object):
 
 #__________________________________________________________ PRECONDITIONING BLOCK ____________________________________________________________
 
-    def precond_Blk(self):
+    def general_precond_Blk(self):
          
         self.preconditionBlock = f"""
         [Preconditioning]
@@ -1419,10 +1686,9 @@ class mooseCall(object):
         """
 
 #__________________________________________________________ EXECUTION BLOCK _________________________________________________________________
-    def exec_Blk(self, steady=True, transient=False):
+    def steady_exec_Blk(self):
 
-        if steady:
-            exec_Block = f"""
+            self.execBlock = f"""
             [Executioner]
             type = Steady
         
@@ -1442,8 +1708,10 @@ class mooseCall(object):
         
             [] #____________________ END EXECUTION
             """
-        elif transient:
-            exec_Block = f"""
+
+
+    def transient_exec_Blk(self):
+            self.execBlock = f"""
             [Executioner]
             #type = Steady
             type = Transient
@@ -1463,7 +1731,8 @@ class mooseCall(object):
             num_steps = 2
             [] #____________________ END EXECUTION
             """
-        self.execBlock = exec_Block
+
+
 
 #__________________________________________________________ OUTPUT BLOCK _________________________________________________________________
     def output_Block(self, exodus=True, csv=False, csv_deliminator=','):
