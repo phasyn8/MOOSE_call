@@ -15,9 +15,13 @@ import os # this could also be used to automatically execute the MOOSE simulatio
 import pandas as pd
 import numpy as np
 import sys
-#sys.path.insert(1, '~/GitHub/mesher/src') # for dependencies
+sys.path.insert(1, './') # for dependencies
+import organizing_func as func
 
 class mooseCall(object):
+
+
+# ++++++++++++++++++++++++++++++ INIT ++++++++++++++++++++++++++++++++++++++
 
     def __init__(self, filename, file_path, mesh_path, version, parameters_df, surface_elev, **kwargs):
         #Keyword Args assingment
@@ -54,22 +58,60 @@ class mooseCall(object):
             # Pull Surface and Volume parameters from a mesh dataframe.    
             self.parameters = parameters_df
 
-            vol_list = parameters_df.loc[:, meshLOG.columns.str.contains("Volumes")].columns.tolist()
+            vol_list = parameters_df.loc[:, parameters_df.columns.str.contains("Volumes")].columns.tolist()
             #meshLOG[vol_list[0]]  # this prints the volume list
             #vol_list = meshLOG.loc[:, meshLOG.columns.str.contains("Volumes")].columns.tolist()
             #meshLOG[vol_list]
 
-            self.all_meshBlocks = combine_columns_to_string(df=parameters_df, index=0, columns=vol_list)
-            self.fault_meshBlocks = [] # This needs to be populated from the meshblock builder
-            self.surface_meshBlocks = [] # This needs to be populated from the meshblock builder
+            # init vars 
+            self.meshBlockIsBuilt_flag = False
+            self.start_blockID = 10000 # starts at an arbitrarily high number to avoid conflict with the fragmented meshblocks
+            self.current_blockID = self.start_blockID 
 
-            self.current_blockID = 10000 # starts at an arbitrarily high number to avoid conflict with the fragmented meshblocks
+            #====================Surface and Fault Blocks ===========
+                    # these are abstracted to avoid conflicts with other functions
+            meshLOG = self.parameters  
+            current_blockID = self.start_blockID
+            fault_meshBlocks = [] # This needs to be populated from the meshblock builder
+            surface_meshBlocks = [] # This list needs to be populated from the meshblock builder
 
-            azimuth_deg = parameters_df['Azimuth SHMax']
-            k_h = parameters_df['Sv ratio k_Shmin']
-            k_H = parameters_df['Sv ratio K_SHMax']
+            fault_list = meshLOG.loc[:, meshLOG.columns.str.contains("Fault_Elements")].columns.tolist()
+            fault_names = [item.split(' ')[0] for item in fault_list]
 
-            self.stress_tensor = XYZ_stress_tensor(azimuth_deg=azimuth_deg, z=-1, rho=1, g=9.81, k_H=k_H, k_h=k_h, print_output=False)
+            surface_list = meshLOG.loc[:, meshLOG.columns.str.contains("Surface_Elements")].columns.tolist()
+            surface_names = [item.split(' ')[0] for item in surface_list]
+
+
+            """  SURFACE LISTS """
+            #for surface_name, surface_sidesets, in zip(surface_names, meshLOG[surface_list].values.tolist()):
+            for idx, surface_name in enumerate(surface_names):
+                #surface_sidesets = func.combine_columns_to_string(meshLOG, index=0, columns=[surface_list[idx]]) # this is only useful for mesh blocks
+                surface_meshBlocks.append(f"{surface_name}_surface")
+                current_blockID = current_blockID+1
+
+
+            """ FAULT LISTS """
+            #for fault_name, fault_sidesets, in zip(fault_names, meshLOG[fault_list].values.tolist()):
+            for idx, fault_name in enumerate(fault_names):
+                #fault_sidesets = func.combine_columns_to_string(meshLOG, index=0, columns=[fault_list[idx]]) # this is only useful for mesh blocks
+                fault_meshBlocks.append(f"{fault_name}_fault")
+                current_blockID = current_blockID+1
+                #====================END MESHBLOCK ACCOUNTING ===========
+            
+            # Building strings for MOOSE Block args
+            self.vol_meshBlocks = func.combine_columns_to_string(df=parameters_df, index=0, columns=vol_list)
+            self.surface_meshBlocks = f"'{' '.join(surface_meshBlocks)}'" # joining list into sting to pass as MOOSE argument 
+            self.fault_meshBlocks = f"'{' '.join(fault_meshBlocks)}'"
+
+            meshBlocks_list = [self.vol_meshBlocks[1:-1], self.surface_meshBlocks[1:-1], self.fault_meshBlocks[1:-1]]
+
+            self.all_meshBlocks = f"'{' '.join(meshBlocks_list)}'"
+
+            azimuth_deg = parameters_df['Azimuth SHMax'].values[0]
+            k_h = parameters_df['Sv ratio k_Shmin'].values[0]
+            k_H = parameters_df['Sv ratio K_SHMax'].values[0]
+
+            self.stress_tensor = func.XYZ_stress_tensor(azimuth_deg=azimuth_deg, z=-1, rho=1, g=9.81, k_H=k_H, k_h=k_h, print_output=False)
 
 
                 #use this to parse a dictionary input...
@@ -80,127 +122,18 @@ class mooseCall(object):
          print("Mesh path : ", self.mesh_path)
          print("Version : ", self.version)
          print("Surface Elevation : ", self.surface_elev)
-         
+         print("Formation Densities dictionary:", self.density_dict)
+
          print("All Mesh Blocks : ", self.all_meshBlocks)
+         print("Surface Mesh Blocks : ", self.surface_meshBlocks)
          print("Fault Mesh Blocks : ", self.fault_meshBlocks)
-         
-         print("Parameter Dataframe:")
-         
          
          print("Stress Tensor :", self.stress_tensor)
          
-         
+         print("Parameter Dataframe:")
          return self.parameters
 
-    #######    STRESS TENSOR CALC    ###### 
-
-    def XYZ_stress_tensor(azimuth_deg, z, rho, g=9.81, k_H=0.6, k_h=0.4, print_output=False):
-        """
-        Generalized stress tensor as a function of depth, considering faulting regimes
-        and aligning the tensor with the azimuth of the maximum principal horizontal stress.
-        #### IMPORTANT: THIS OUTPUTS A STRESS TENSOR THAT CONFORMS TO AN [ X Y Z ] COORDINATE SPACE #### 
-        #### MANY TEXTBOOK EXAMPLES USE A NorthEastDown (NED) system e.g. Zoback 2010
-        
-        Parameters:
-        z (float): Depth (negative meters below the surface).
-        rho (float): Density of the overburden rock (kg/m^3).
-        azimuth (float): Azimuth of maximum horizontal stress (degrees clockwise from north), North parallel with Y axis.
-        g (float): Gravitational acceleration (m/s^2), default is 9.81 m/s^2. # this is not used in this version, was important for backwards compatibility
-        k_H (float): Proportionality constant for maximum horizontal stress (relative to vertical stress).
-        k_h (float): Proportionality constant for minimum horizontal stress (relative to vertical stress).
-        
-        Returns:
-        rotated_tensor (numpy.ndarray): 3x3 rotated stress tensor matrix based on the faulting regime in [X Y Z} coordinate space.
-        """
-        if z >= 0:
-            raise ValueError("Depth (z) should be a negative value representing meters below the surface")
-        if print_output:
-            print("Azi, SHMax: ", azimuth_deg)
-        azimuth_deg = azimuth_deg+90
-        # Calculate vertical stress due to gravity
-        sigma_v = rho * (z)#rho * g * (-z)  # Vertical stress increases with depth
-        
-        # Calculate horizontal stresses
-        sigma_H = k_H * sigma_v   # Maximum horizontal stress
-        sigma_h = k_h * sigma_v   # Minimum horizontal stress
-        if print_output:
-            print("Sigma_H - K : ", sigma_H)
-            print("Sigma_h - k : ", sigma_h)
-            print("Sigma V: ", sigma_v)
-        
-        azimuth_rad = np.radians((azimuth_deg))
-        # Determine the faulting regime
-        if sigma_v < sigma_H < sigma_h:
-            # Normal faulting regime: σ1 = σv, σ2 = σH, σ3 = σh
-            sigma_xx, sigma_yy, sigma_zz = sigma_v, sigma_H, sigma_h
-            alpha, beta, gamma = np.radians(azimuth_deg-90), np.radians(90), np.radians(0)
-        elif sigma_H < sigma_v < sigma_h:
-            # Strike-slip faulting regime: σ1 = σH, σ2 = σv, σ3 = σh
-            sigma_xx, sigma_yy, sigma_zz = sigma_H, sigma_v, sigma_h
-            alpha, beta, gamma = azimuth_rad, np.radians(0), np.radians(90)
-        elif sigma_H < sigma_h < sigma_v:
-            # Reverse faulting regime: σ1 = σH, σ2 = σh, σ3 = σv
-            sigma_xx, sigma_yy, sigma_zz = sigma_H, sigma_h, sigma_v
-            alpha, beta, gamma = azimuth_rad, np.radians(0), np.radians(0)
-        else:
-            raise ValueError("Invalid stress regime detected. Check input parameters.")
-        
-        # Assume no shear stresses (off-diagonal terms = 0)
-        sigma_xy = sigma_xz = sigma_yz = 0.0
-        
-        # Build the initial stress tensor in the global coordinate system
-        stress_tensor = np.array([
-            [sigma_xx, sigma_xy, sigma_xz],
-            [sigma_xy, sigma_yy, sigma_yz],
-            [sigma_xz, sigma_yz, sigma_zz]
-        ])
-        if print_output:
-            print("Principle Stress Tensor: \n",stress_tensor.round(3))
-        # Convert azimuth to radians
-        
-        
-        # Define the rotation matrix for the azimuth
-        rotation_matrix = np.array([
-            [np.cos(alpha)*np.cos(beta), np.sin(alpha)*np.cos(beta), -np.sin(beta)],
-            [(np.cos(alpha)*np.sin(beta)*np.sin(gamma)) - (np.sin(alpha)*np.cos(gamma)),  (np.sin(alpha)*np.sin(beta)*np.sin(gamma)) + (np.cos(alpha)*np.cos(gamma)), (np.cos(beta)*np.sin(gamma))],
-            [(np.cos(alpha)*np.sin(beta)*np.cos(gamma)) + (np.sin(alpha)*np.sin(gamma)),  (np.sin(alpha)*np.sin(beta)*np.cos(gamma)) - (np.cos(alpha)*np.sin(gamma)), (np.cos(beta)*np.cos(gamma))]
-        ])
-        if print_output:
-            print("Rotation Matrix: \n", rotation_matrix.round(3))
-        # Rotate the stress tensor to align with the azimuth
-        rotated_tensor = rotation_matrix.T @ stress_tensor @ rotation_matrix
-        if print_output:
-            print("Rotated Matrix: \n",rotated_tensor.round(3))
-        return rotated_tensor
-
-
-    #######    String formatting functions   
-
-    def combine_columns_to_string(df: pd.DataFrame, index: int, columns: list) -> str:
-            """
-            Combine specified columns of a DataFrame row into a comma-separated string.
-            Strips any apostrophes and brackets within the values, except for the ones closing the final string.
-        
-            :param df: pandas DataFrame
-            :param index: Row index to retrieve values from
-            :param columns: List of column names to include in the output string
-            :return: Formatted string with combined values
-            """
-            values = [str(df.at[index, col]).replace("'", "").replace("[", "").replace("]", "").replace(",","") for col in columns]
-            return f"'{', '.join(values).replace(",","")}'"
-        
-    def surf_list(prefix="Surface_", start=1, end=2):
-            """
-            Return a single quote enclosed sequentionally number list of whatever you pass into the 'prefix' argument
-
-            Parameters:
-            prefix (str) : text of list prefix
-            start (int) : start number of zero padded 4 digit list
-            end (int) : end number... like start
-            """
-            boundary_list = ' '.join([f'{prefix}{i:04d}' for i in range(start, end+1)])
-            #print(boundary_list)
-            return boundary_list
+    
 
 #+++++++++++++++++++++++ THIS IS THE START OF THE SIMULATION TEMPLATES +++++++++++++++++++++++++++
     
@@ -224,29 +157,33 @@ class mooseCall(object):
         {self.execBlock}
         {self.outputBlock}
         """
-        
+        suffix = "_pre_grav"
         # Simulation blocks construction
-        general_headers_Blk(self)
-        general_globals_Blk(self)
-        ###### MESH BLOCK #####
-        general_varaibles_Blk(self)
-        preGravity_AuxVars_Blk(self)
-        solidMech_quasiStatic_physics_Blk(self)
-        preGravity_Kernels_Blk(self)
-        preGravity_AuxKernels_Blk(self)
-        atmos_geomech_BC_Blk(self)
-        no_functions_Blk(self)
-        no_ic_Blk(self)
-        preGravity_Projected_Stress_materials_Blk(self, density_dict=self.density_dict)
-        no_UO_Blk(self)
-        no_PostProcessor(self)
-        precond_Blk(self)
-        general_headers_Blk(self)
-        output_Block(self, exodus=True, csv=False, csv_deliminator=',')
+        self.general_headers_Blk()
+        self.general_globals_Blk()
+        if self.meshBlockIsBuilt_flag:
+            pass
+        else:
+            self.generalized_mesher_mesh_Blk()
+        self.general_varaibles_Blk()
+        self.preGravity_AuxVars_Blk()
+        self.solidMech_quasiStatic_physics_Blk()
+        self.preGravity_Kernels_Blk()
+        self.preGravity_AuxKernels_Blk()
+        self.atmos_geomech_BC_Blk()
+        self.no_functions_Blk()
+        self.no_ic_Blk()
+        self.preGravity_Projected_Stress_materials_Blk(density_dict=self.density_dict)
+        self.no_UO_Blk()
+        self.no_PostProcessor()
+        self.general_precond_Blk()
+        self.transient_exec_Blk()
+        self.output_Block(exodus=True, csv=False, csv_deliminator=',')
         
         # combine and write MOOSE input
-        moosebuilder(self)
-
+        self.moosebuilder(suffix=suffix)
+        self.preGravity_exodus = f'{self.write_path[:-2]}{suffix}_out.e'
+        print(f"Exported pre gravity calc{self.write_path[:-2]}{suffix}.i")
 
 
     def fault_stability_projected_stress_sim(self):
@@ -270,30 +207,34 @@ class mooseCall(object):
         {self.execBlock}
         {self.outputBlock}
         """
-        
+        suffix='_fault_stability'
+        #general_headers_Blk(self)
         # Simulation blocks construction
-        general_headers_Blk(self)
-        general_globals_Blk(self)
-        generalized_mesher_mesh_Blk(self)
-        general_varaibles_Blk(self)
-        postGravity_AuxVars_Blk(self)
-        solidMech_quasiStatic_physics_Blk(self)
-        postGravity_Kernels_Blk(self)
-        postGravity_AuxKernels_Blk(self)
-        atmos_geomech_BC_Blk(self)
-        no_functions_Blk(self)
-        no_ic_Blk(self)
-        postGravity_Projected_Stress_materials_Blk(self)
-        no_UO_Blk(self)
-        no_PostProcessor(self)
-        general_precond_Blk(self)
-        transient_exec_Blk(self)
-        output_Block(self, exodus=True, csv=False, csv_deliminator=',')
+        self.general_headers_Blk()
+        self.general_globals_Blk()
+        if self.meshBlockIsBuilt_flag:
+            pass
+        else:
+            self.generalized_mesher_mesh_Blk()
+        self.general_varaibles_Blk()
+        self.postGravity_AuxVars_Blk()
+        self.solidMech_quasiStatic_physics_Blk()
+        self.postGravity_Kernels_Blk()
+        self.postGravity_AuxKernels_Blk()
+        self.atmos_geomech_BC_Blk()
+        self.no_functions_Blk()
+        self.ic_initStress_Blk() #self.no_ic_Blk()
+        self.postGravity_Projected_stress_materials_Blk()
+        self.solution_UO_Blk(solution_exodus=self.preGravity_exodus)#self.no_UO_Blk()
+        self.ts_td_sf_PostProcessors()#self.no_PostProcessor()
+        self.general_precond_Blk()
+        self.steady_exec_Blk()
+        self.output_Block(exodus=True, csv=True, csv_deliminator=',')
         
         # combine and write MOOSE input
-        moosebuilder(self)
+        self.moosebuilder(suffix=suffix)
 
-        print(f"Exported {self.write_path}")
+        print(f"Exported Post gravity calc projected stress fault stability to : {self.write_path}")
 
 
 
@@ -301,7 +242,7 @@ class mooseCall(object):
 
 #+++++++++++++++++++++++   THIS IS THE START OF THE BLOCK BUILDING TEMPLATES    +++++++++++++++++++++++++++
 
-    def moosebuilder(self):
+    def moosebuilder(self, suffix='no_suffix'):
         
         """
         Combines the input blocks into an input file 
@@ -328,7 +269,7 @@ class mooseCall(object):
         {self.execBlock}
         {self.outputBlock}
         """
-        f = open(self.write_path, 'w+')
+        f = open(f'{self.write_path[:-2]}{suffix}.i', 'w+')
             
         f.write(MOOSE_input)
         f.close()
@@ -345,9 +286,9 @@ class mooseCall(object):
             #Version is {self.version}
             #Mesh Path : {self.mesh_path}
             
-            #Direction SHmax (AZI Clockwise from North) = {self.parameters['Azimuth ShMax']}
-                                     #Sv / SHMax ration = {self.parameters['Sv ratio SHMax']}
-                                     #Sv / Shmin ration = {self.parameters['Sv ratio SHmax']}
+            #Direction SHmax (AZI Clockwise from North) = {self.parameters['Azimuth SHMax'].values}
+            #Sv / SHMax ration = {self.parameters['Sv ratio K_SHMax'].values}
+            #Sv / Shmin ration = {self.parameters['Sv ratio k_Shmin'].values}
 
             #Surface elevation = {self.surface_elev}
         
@@ -369,10 +310,10 @@ class mooseCall(object):
 
 
         fault_list = meshLOG.loc[:, meshLOG.columns.str.contains("Fault_Elements")].columns.tolist()
-        fault_names = [item.split(' ')[0] for item in fault_list[0]]
+        fault_names = [item.split(' ')[0] for item in fault_list]
 
         surface_list = meshLOG.loc[:, meshLOG.columns.str.contains("Surface_Elements")].columns.tolist()
-        surface_names = [item.split(' ')[0] for item in surface_list[0]]
+        surface_names = [item.split(' ')[0] for item in surface_list]
 
         faults_lowerDBlock_list = []
         surface_lowerDBlock_list = []
@@ -381,8 +322,10 @@ class mooseCall(object):
 
 
         """  SURFACE LISTS """
-        for surface_name, surface_sidesets, in zip(surface_names, meshLOG[surface_list].values.tolist()):
-            next_msh = f'{fault_name}Surface'
+        #for surface_name, surface_sidesets, in zip(surface_names, meshLOG[surface_list].values.tolist()):
+        for idx, surface_name in enumerate(surface_names):
+            surface_sidesets = func.combine_columns_to_string(meshLOG, index=0, columns=[surface_list[idx]])
+            next_msh = f'{surface_name}Surface'
             surface_lowerDBlock_list.append(f"""
                     [{next_msh}]
                         input={current_msh}
@@ -392,13 +335,15 @@ class mooseCall(object):
                         sidesets = {surface_sidesets}
                     []"""
             )
-            self.surface_meshBlocks.append(f"{surface_name}_surface")
+            #self.surface_meshBlocks.append(f"{surface_name}_surface")
             current_msh = f'{surface_name}Surface'
             self.current_blockID = self.current_blockID+1
 
 
         """ FAULT LISTS """
-        for fault_name, fault_sidesets, in zip(fault_names, meshLOG[fault_list].values.tolist()):
+        #for fault_name, fault_sidesets, in zip(fault_names, meshLOG[fault_list].values.tolist()):
+        for idx, fault_name in enumerate(fault_names):
+            fault_sidesets = func.combine_columns_to_string(meshLOG, index=0, columns=[fault_list[idx]])
             next_msh = f'{fault_name}Fault'
             faults_lowerDBlock_list.append(f"""
                     [{next_msh}]
@@ -409,7 +354,7 @@ class mooseCall(object):
                         sidesets = {fault_sidesets}
                     []"""
             )
-            self.fault_meshBlocks.append(f"{fault_name}_fault")
+            #self.fault_meshBlocks.append(f"{fault_name}_fault")
             current_msh = f'{fault_name}Fault'
             self.current_blockID = self.current_blockID+1
             
@@ -428,7 +373,7 @@ class mooseCall(object):
             {fault_lower_dimensionalBlocks} 
         []   #  ------------ END OF MESH BLOCK
         """
-    
+        self.meshBlockIsBuilt_flag = True
     
     
     def cal_create_tracked_mesh_block(self, dim2_elements_lists, mesh_path, meshfile, filename):
@@ -513,7 +458,7 @@ class mooseCall(object):
         f = open(mesh_path+filename, 'w+')
         f.write(meshBlock)
         f.close()
-
+        self.meshBlockIsBuilt_flag = True
 
 #__________________________________________________________ VARIABLES BLOCK _________________________________________________________________
     def general_varaibles_Blk(self):
@@ -764,10 +709,10 @@ class mooseCall(object):
                 [dilation_tendency]
                     order = CONSTANT
                     family = MONOMIAL
-                [
+                []
                 [fracture_suscept]
                 order = CONSTANT
-                family =] MONOMIAL
+                family = MONOMIAL
                 [] 
 
                  
@@ -887,7 +832,7 @@ class mooseCall(object):
                 type = ParsedAux
                 variable = initStressX_X
                 coupled_variables = 'stress_zz'
-                expression = 'stress_zz*{K_XX}' # e.g : K_h = 0.8 Sv
+                expression = 'abs(stress_zz)*{K_XX}' # e.g : K_h = 0.8 Sv
                 #execute_on = 'initial timestep_begin'
                 block = {self.all_meshBlocks}
         []
@@ -895,14 +840,14 @@ class mooseCall(object):
                 type = ParsedAux
                 variable = initStressX_Y
                 coupled_variables = 'stress_zz'
-                expression = 'stress_zz*{K_XY}'  
+                expression = 'abs(stress_zz)*{K_XY}'  
                 block = {self.all_meshBlocks}
         []
         [init_Stress_XZ]
                 type = ParsedAux
                 variable = initStressX_Z
                 coupled_variables = 'stress_zz'
-                expression = 'stress_zz*{K_XZ}'  
+                expression = 'abs(stress_zz)*{K_XZ}'  
                 block = {self.all_meshBlocks}
         []
 
@@ -910,21 +855,21 @@ class mooseCall(object):
                             type = ParsedAux
                             variable = initStressY_X
                             coupled_variables = 'stress_zz'
-                            expression = 'stress_zz*{K_YX}'  
+                            expression = 'abs(stress_zz)*{K_YX}'  
                             block = {self.all_meshBlocks}
                     []
                     [init_Stress_YY]
                             type = ParsedAux
                             variable = initStressY_Y
                             coupled_variables = 'stress_zz'
-                            expression = 'stress_zz*{K_YY}' 
+                            expression = 'abs(stress_zz)*{K_YY}' 
                             block = {self.all_meshBlocks}
                     []
                     [init_Stress_YZ]
                             type = ParsedAux
                             variable = initStressY_Z
                             coupled_variables = 'stress_zz'
-                            expression = 'stress_zz*{K_YZ}' 
+                            expression = 'abs(stress_zz)*{K_YZ}' 
                             block = {self.all_meshBlocks}
                     []
 
@@ -932,14 +877,14 @@ class mooseCall(object):
                                         type = ParsedAux
                                         variable = initStressZ_X
                                         coupled_variables = 'stress_zz'
-                                        expression = 'stress_zz*{K_ZX}'  # This is Zero for no shear model as one principle stress is the Vertical stress
+                                        expression = 'abs(stress_zz)*{K_ZX}'  # This is Zero for no shear model as one principle stress is the Vertical stress
                                         block = {self.all_meshBlocks}
                                 []
                                 [init_Stress_ZY]
                                         type = ParsedAux
                                         variable = initStressZ_Y
                                         coupled_variables = 'stress_zz'
-                                        expression = 'stress_zz*{K_ZY}' # No shear here as well
+                                        expression = 'abs(stress_zz)*{K_ZY}' # No shear here as well
                                         block = {self.all_meshBlocks}
                                 []
                                 [init_stress_ZZ]
@@ -1397,10 +1342,10 @@ class mooseCall(object):
 
         """
 
-        xBC = combine_columns_to_string(df=self.parameters, index=0, columns=["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
-        yBC = combine_columns_to_string(df=self.parameters, index=0, columns=["West Boundary_Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
-        zBC = combine_columns_to_string(df=self.parameters, index=0, columns=["Base Boundary_Elements"])
-        TopBC = combine_columns_to_string(df=self.parameters, index=0, columns=["Top Boundary_Elements"])
+        xBC = func.combine_columns_to_string(df=self.parameters, index=0, columns=["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
+        yBC = func.combine_columns_to_string(df=self.parameters, index=0, columns=["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
+        zBC = func.combine_columns_to_string(df=self.parameters, index=0, columns=["Base Boundary_Elements"])
+        TopBC = func.combine_columns_to_string(df=self.parameters, index=0, columns=["Top Boundary_Elements"])
         
         #xBC = df_picks_index[["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"]]
         #yBC = df_picks_index[["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"]]
@@ -1549,10 +1494,10 @@ class mooseCall(object):
         
             #Initial stress equilibrium, initial stress tensor is calculated as a factor of vertical gravitational stress and projected onto a non displaced mesh
                 initial_stress = '1 1 1 1 1 1 1 1 1'
-                #initial_stress_aux = 'initStressXX initStressXY initStressXZ initStressYX initStressYY initStressYZ initStressZX initStressZY initStressZZ'
+                initial_stress_aux = 'initStressXX initStressXY initStressXZ initStressYX initStressYY initStressYZ initStressZX initStressZY initStressZZ'
                 block = {self.all_meshBlocks}
         [] 
-
+    [] # ______________END MATERIALS BLOCK
         """
     
     
@@ -1568,7 +1513,24 @@ class mooseCall(object):
                     []
                     """)
         density_material_properties = "\n".join(density_list)
-                     
+        
+        surface_material_properties = f"""
+                    [densitySurface]
+                        type = GenericConstantMaterial
+                        prop_names = 'density'
+                        block =  {self.surface_meshBlocks} 
+                        prop_values = 1
+                    []
+                    """
+        fault_material_properties = f"""
+                    [densityfault]
+                        type = GenericConstantMaterial
+                        prop_names = 'density'
+                        block =  {self.fault_meshBlocks} 
+                        prop_values = 1
+                    []
+                    """
+
         
         self.materialBlock = f"""    
         [Materials]
@@ -1582,7 +1544,9 @@ class mooseCall(object):
             block = {self.all_meshBlocks}
         []
 
-        {density_material_properties} 
+        {density_material_properties}
+        {surface_material_properties}
+        {fault_material_properties} 
 
         [stress]
         type = ComputeLinearElasticStress
@@ -1595,11 +1559,11 @@ class mooseCall(object):
         
             #Initial stress scenario: stress tensor is calculated as a factor of vertical gravitational stress, will then be the initial condition of post gravity materials block
                 initial_stress = '0 0 0 0 0 0 0 0 0'
-                initial_stress_aux = 'initStressXX initStressXY initStressXZ initStressYX initStressYY initStressYZ initStressZX initStressZY initStressZZ'
+                #initial_stress_aux = 'initStressXX initStressXY initStressXZ initStressYX initStressYY initStressYZ initStressZX initStressZY initStressZZ'
                 block = {self.all_meshBlocks} 
         [] 
 
-
+    [] #___________________END Materials Block
     """
 
 #__________________________________________________________ USEROBJECTS BLOCK ____________________________________________________________
@@ -1611,7 +1575,7 @@ class mooseCall(object):
         [UserObjects]
         [ini_stress_from_gravity_soln]
           type = SolutionUserObject
-          mesh = {solution_exodus}
+          mesh = '{solution_exodus}'
           system_variables = 'initStressX_X initStressX_Y initStressX_Z initStressY_X initStressY_Y initStressY_Z initStressZ_X initStressZ_Y stress_zz'
           timestep = LATEST
         []
@@ -1750,7 +1714,7 @@ class mooseCall(object):
                 [out]
                 type = Exodus
                 elemental_as_nodal = true
-                exodus = true
+                #exodus = true
                 []
                 """
         
