@@ -1470,8 +1470,39 @@ class mooseCall(object):
          
 #__________________________________________________________ MATERIALS BLOCK ____________________________________________________________
         
-    def postGravity_Projected_stress_materials_Blk(self):
-         self.materialBlock = f"""    
+    def postGravity_Projected_stress_materials_Blk(self, density_dict={}):
+        
+        density_list =[]
+        for key, value, in density_dict.items():
+            density_list.append(f"""
+                    [density{key}]
+                        type = GenericConstantMaterial
+                        prop_names = 'density'
+                        block =  {value[1]} 
+                        prop_values = {value[0]} 
+                    []
+                    """)
+        density_material_properties = "\n".join(density_list)
+        
+        surface_material_properties = f"""
+                    [densitySurface]
+                        type = GenericConstantMaterial
+                        prop_names = 'density'
+                        block =  {self.surface_meshBlocks} 
+                        prop_values = 1
+                    []
+                    """
+        fault_material_properties = f"""
+                    [densityfault]
+                        type = GenericConstantMaterial
+                        prop_names = 'density'
+                        block =  {self.fault_meshBlocks} 
+                        prop_values = 1
+                    []
+                    """
+        
+        
+        self.materialBlock = f"""    
         [Materials]
 
         [elasticity_tensor]
@@ -1482,7 +1513,9 @@ class mooseCall(object):
             compute=true
             block = {self.all_meshBlocks} 
         []
-
+        {density_material_properties}
+        {surface_material_properties}
+        {fault_material_properties} 
         [stress]
             type = ComputeLinearElasticStress
             block= {self.all_meshBlocks} 
@@ -1713,7 +1746,7 @@ class mooseCall(object):
         _exodus= f"""
                 [out]
                 type = Exodus
-                elemental_as_nodal = true
+                #elemental_as_nodal = true
                 #exodus = true
                 []
                 """
