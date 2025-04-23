@@ -45,6 +45,11 @@ class mooseCall(object):
                 self.simulation_name = "No Simulation Name"
             else:
                 self.simulation_name = kwargs.get('simulation_name')  # this is the project name
+
+            if kwargs.get('df_index') == None:
+                self.df_index = 0
+            else:
+                self.df_index = kwargs.get('df_index')
     
         #Required arguments
             self.filename = filename
@@ -97,9 +102,9 @@ class mooseCall(object):
                 fault_meshBlocks.append(f"{fault_name}_fault")
                 current_blockID = current_blockID+1
                 #====================END MESHBLOCK ACCOUNTING ===========
-            
+            self.fault_list = fault_meshBlocks
             # Building strings for MOOSE Block args
-            self.vol_meshBlocks = func.combine_columns_to_string(df=parameters_df, index=0, columns=vol_list)
+            self.vol_meshBlocks = func.combine_columns_to_string(df=parameters_df, index=self.df_index, columns=vol_list)
             self.surface_meshBlocks = f"'{' '.join(surface_meshBlocks)}'" # joining list into sting to pass as MOOSE argument 
             self.fault_meshBlocks = f"'{' '.join(fault_meshBlocks)}'"
 
@@ -236,7 +241,55 @@ class mooseCall(object):
 
         print(f"Exported Post gravity calc projected stress fault stability to : {self.write_path}")
 
+    def fault_stability_projected_stress_sim_with_direction(self):
+        
+        """
+        {self.headerBlock}
+        {self.globalBlock}
+        {self.meshBlock}
+        {self.varsBlock}
+        {self.auxVarsBlock}
+        {self.physicsBlock}
+        {self.kernelsBlock}
+        {self.auxKernelsBlock}  
+        {self.bcBlock}
+        {self.functionBlock}
+        {self.icBlock}
+        {self.materialBlock}
+        {self.userobjectBlock}
+        {self.postBlock}
+        {self.preconditionBlock}
+        {self.execBlock}
+        {self.outputBlock}
+        """
+        suffix='_fault_stability'
+        #general_headers_Blk(self)
+        # Simulation blocks construction
+        self.general_headers_Blk()
+        self.general_globals_Blk()
+        if self.meshBlockIsBuilt_flag:
+            pass
+        else:
+            self.generalized_mesher_mesh_Blk()
+        self.general_varaibles_Blk()
+        self.postGravity_AuxVars_Blk()
+        self.solidMech_quasiStatic_physics_Blk()
+        self.postGravity_Kernels_Blk()
+        self.postGravity_AuxKernels_Blk()
+        self.atmos_geomech_BC_Blk()
+        self.no_functions_Blk()
+        self.ic_initStress_Blk() #self.no_ic_Blk()
+        self.postGravity_Projected_stress_materials_Blk()
+        self.solution_UO_Blk(solution_exodus=self.preGravity_exodus)#self.no_UO_Blk()
+        self.fault_stability_PostProcessors()#self.no_PostProcessor()
+        self.general_precond_Blk()
+        self.steady_exec_Blk()
+        self.output_Block(exodus=True, csv=True, csv_deliminator=',')
+        
+        # combine and write MOOSE input
+        self.moosebuilder(suffix=suffix)
 
+        print(f"Exported Post gravity calc projected stress fault stability to : {self.write_path}")
 
 
 
@@ -287,8 +340,8 @@ class mooseCall(object):
             #Mesh Path : {self.mesh_path}
             
             #Direction SHmax (AZI Clockwise from North) = {self.parameters['Azimuth SHMax'].values}
-            #Sv / SHMax ration = {self.parameters['Sv ratio K_SHMax'].values}
-            #Sv / Shmin ration = {self.parameters['Sv ratio k_Shmin'].values}
+            #Sv / SHMax ratio = {self.parameters['Sv ratio K_SHMax'].values}
+            #Sv / Shmin ratio = {self.parameters['Sv ratio k_Shmin'].values}
 
             #Surface elevation = {self.surface_elev}
         
@@ -324,7 +377,7 @@ class mooseCall(object):
         """  SURFACE LISTS """
         #for surface_name, surface_sidesets, in zip(surface_names, meshLOG[surface_list].values.tolist()):
         for idx, surface_name in enumerate(surface_names):
-            surface_sidesets = func.combine_columns_to_string(meshLOG, index=0, columns=[surface_list[idx]])
+            surface_sidesets = func.combine_columns_to_string(meshLOG, index=self.df_index, columns=[surface_list[idx]])
             next_msh = f'{surface_name}Surface'
             surface_lowerDBlock_list.append(f"""
                     [{next_msh}]
@@ -343,7 +396,7 @@ class mooseCall(object):
         """ FAULT LISTS """
         #for fault_name, fault_sidesets, in zip(fault_names, meshLOG[fault_list].values.tolist()):
         for idx, fault_name in enumerate(fault_names):
-            fault_sidesets = func.combine_columns_to_string(meshLOG, index=0, columns=[fault_list[idx]])
+            fault_sidesets = func.combine_columns_to_string(meshLOG, index=self.df_index, columns=[fault_list[idx]])
             next_msh = f'{fault_name}Fault'
             faults_lowerDBlock_list.append(f"""
                     [{next_msh}]
@@ -1342,10 +1395,10 @@ class mooseCall(object):
 
         """
 
-        xBC = func.combine_columns_to_string(df=self.parameters, index=0, columns=["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
-        yBC = func.combine_columns_to_string(df=self.parameters, index=0, columns=["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
-        zBC = func.combine_columns_to_string(df=self.parameters, index=0, columns=["Base Boundary_Elements"])
-        TopBC = func.combine_columns_to_string(df=self.parameters, index=0, columns=["Top Boundary_Elements"])
+        xBC = func.combine_columns_to_string(df=self.parameters, index=self.df_index, columns=["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
+        yBC = func.combine_columns_to_string(df=self.parameters, index=self.df_index, columns=["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"])
+        zBC = func.combine_columns_to_string(df=self.parameters, index=self.df_index, columns=["Base Boundary_Elements"])
+        TopBC = func.combine_columns_to_string(df=self.parameters, index=self.df_index, columns=["Top Boundary_Elements"])
         
         #xBC = df_picks_index[["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"]]
         #yBC = df_picks_index[["West Boundary_Elements","East Boundary_Elements","South Boundary_Elements", "North Boundary_Elements", "Base Boundary_Elements"]]
@@ -1642,7 +1695,7 @@ class mooseCall(object):
         []
         [Td_value_sampler]
          type = ElementValueSampler
-         variable = 'dilation_tendency'
+         variable = 'dilation_tendency, '
          sort_by = id
          block = {self.fault_meshBlocks}
          execute_on = 'TIMESTEP_END'
@@ -1660,6 +1713,36 @@ class mooseCall(object):
 
         """
 
+    def fault_stability_PostProcessors(self):
+        
+        postprocessor_list = []
+        for faultBlockID in self.fault_list:
+
+            
+            postprocessor_list.append(f"""
+                    [Ts_value_sampler{faultBlockID}]
+                    type = ElementValueSampler
+                    variable = 'slip_tendency dilation_tendency fracture_suscept dip_x dip_y dip_z strike_x strike_y strike_z'
+                    sort_by = id
+                    block = '{faultBlockID}'
+                    execute_on = 'TIMESTEP_END'
+                    []
+                    """)
+        fault_postprocessors = "\n".join(postprocessor_list)
+        self.postBlock = f"""
+
+        [Postprocessors]
+      
+        [] #_____________________ END PostProcessors
+
+        [VectorPostprocessors]
+
+        {fault_postprocessors}
+        
+
+        [] #_____________________END VectorPostProcessor
+
+        """
     def no_PostProcessor(self):
          
         self.postBlock = f"""
