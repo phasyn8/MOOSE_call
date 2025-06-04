@@ -1695,7 +1695,7 @@ class mooseCall(object):
         []
         [Td_value_sampler]
          type = ElementValueSampler
-         variable = 'dilation_tendency, '
+         variable = 'dilation_tendency'
          sort_by = id
          block = {self.fault_meshBlocks}
          execute_on = 'TIMESTEP_END'
