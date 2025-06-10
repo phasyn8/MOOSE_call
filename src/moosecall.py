@@ -1781,10 +1781,10 @@ class mooseCall(object):
             line_search = cp
         
             nl_abs_tol = 1e-6
-            nl_rel_tol = 1e-4
+            nl_rel_tol = 1e-1
         
-            l_max_its = 200
-            nl_max_its = 200
+            l_max_its = 25
+            nl_max_its = 25
         
             [] #____________________ END EXECUTION
             """
