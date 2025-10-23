@@ -191,9 +191,9 @@ class mooseCall(object):
         self.no_PostProcessor()
         self.general_precond_Blk()
         self.transient_exec_Blk()
-        self.output_Block(exodus=False, csv=False, csv_deliminator=',')
+        self.output_Block(exodus=True, csv=False, csv_deliminator=',')
         self.moosebuilder(suffix=suffix)
-        sub_filename = f'./{self.filename[:-2]}{suffix}.i' #This should probably be a optioned string returned from the moosebuilder function
+        sub_filename = f'{self.write_path[:-2]}{suffix}.i' #This should probably be a optioned string returned from the moosebuilder function
         
         
         ##### Main simulation #####    
@@ -221,7 +221,7 @@ class mooseCall(object):
         self.fault_stability_PostProcessors()
         self.general_precond_Blk()
         self.steady_exec_Blk()
-        self.output_Block(exodus=False, csv=True, csv_deliminator=',')
+        self.output_Block(exodus=True, csv=True, csv_deliminator=',')
         
         # combine and write MOOSE input
         self.moosebuilder(suffix=suffix)
@@ -474,7 +474,7 @@ class mooseCall(object):
 
         """
     
-    def multiAppStressCopyXfer_Blk(self, sub_filename="./sub.i"):
+    def multiAppStressCopyXfer_Blk(self, sub_filename="no_suffix"):
         self.multiAppBlock = f"""
         [MultiApps]
             [pre_Stress]
@@ -857,91 +857,91 @@ class mooseCall(object):
         #element stress tensor components
           [stress_zy]
             order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [stress_zx]
             order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [stress_zz]
             order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [stress_yz]
             order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [stress_yx]
             order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [stress_yy]
-            order = FIRST
-            family = MONOMIAL
+           order = FIRST
+            family = LAGRANGE
         []
 
         [stress_xz]
             order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [stress_xy]
             order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [stress_xx]
             order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []       
         # Initial Stress Vars computed from Stress_ZZ due to gravitational loading
         [initStressX_X]
-           order = FIRST
-            family = MONOMIAL
+          order = FIRST
+          family = LAGRANGE
         []
 
         [initStressX_Y]
-            order = FIRST
-            family = MONOMIAL
+         order = FIRST
+            family = LAGRANGE
         []
 
         [initStressX_Z]
            order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [initStressY_X]
            order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [initStressY_Y]
           order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [initStressY_Z]
             order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
         
         [initStressZ_X]
            order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
         [initStressZ_Y]
            order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
         [initStressZ_Z]
           order = FIRST
-            family = MONOMIAL
+            family = LAGRANGE
         []
 
        
@@ -958,6 +958,18 @@ class mooseCall(object):
             order = CONSTANT
             family = MONOMIAL
         []
+        #[./maxprincipal]
+        #  order = CONSTANT
+        #  family = MONOMIAL
+        #[../]
+        #[./midprincipal]
+        #  order = CONSTANT
+        #  family = MONOMIAL
+        #[../]
+        #[./minprincipal]
+        #  order = CONSTANT
+        #  family = MONOMIAL
+        #[../]
        
         [./hydrostatic_FW]
           order = CONSTANT
@@ -1093,47 +1105,47 @@ class mooseCall(object):
 
             # Initial Stress Vars computed from Stress_ZZ due to gravitational loading
             [initStressXX]
-               order = FIRST
-                family = MONOMIAL
+                order = FIRST
+                family = LAGRANGE
               []
       
               [initStressXY]
                 order = FIRST
-                family = MONOMIAL
+                family = LAGRANGE
               []
       
               [initStressXZ]
-                order = FIRST
-                family = MONOMIAL
+                  order = FIRST
+                  family = LAGRANGE
               []
 
               [initStressYX]
                 order = FIRST
-                family = MONOMIAL
+                family = LAGRANGE
               []
       
               [initStressYY]
                 order = FIRST
-                family = MONOMIAL
+                family = LAGRANGE
               []
       
               [initStressYZ]
-                order = FIRST
-                family = MONOMIAL
-              []
+                  order = FIRST
+                  family = LAGRANGE
+                []
               
               [initStressZX]
-                order = FIRST
-                family = MONOMIAL
+                  order = FIRST
+                  family = LAGRANGE
               []
       
               [initStressZY]
-                order = FIRST
-                family = MONOMIAL
+                  order = FIRST
+                  family = LAGRANGE
               []
               [initStressZZ]
                 order = FIRST
-                family = MONOMIAL
+                family = LAGRANGE
               []
 
             [./MaxShear_stress]
@@ -1894,7 +1906,7 @@ class mooseCall(object):
             type = ParsedAux
             variable = initStressX_X
             coupled_variables = 'stress_zz'
-            expression = 'abs(stress_zz)*${{k_xx}}' # e.g "K_h" ratio of Sv
+            expression = 'stress_zz*${{k_xx}}' # K_h = 0.8 Sv
             #execute_on = 'initial timestep_begin'
             block = ${{all_blocks}}
     [../]
@@ -1903,7 +1915,7 @@ class mooseCall(object):
             type = ParsedAux
             variable = initStressX_Y
             coupled_variables = 'stress_zz'
-            expression = 'abs(stress_zz)*${{k_xy}}'  # This is Zero for no shear model
+            expression = 'stress_zz*${{k_xy}}'  # This is Zero for no shear model
             block = ${{all_blocks}}
     [../]
 
@@ -1911,7 +1923,7 @@ class mooseCall(object):
             type = ParsedAux
             variable = initStressX_Z
             coupled_variables = 'stress_zz'
-            expression = 'abs(stress_zz)*${{k_xz}}'  # This is Zero for no shear model
+            expression = 'stress_zz*${{k_xz}}'  # This is Zero for no shear model
             block = ${{all_blocks}}
     [../]
 
@@ -1919,7 +1931,7 @@ class mooseCall(object):
             type = ParsedAux
             variable = initStressY_X
             coupled_variables = 'stress_zz'
-            expression = 'abs(stress_zz)*${{k_yx}}'  # This is Zero for no shear model
+            expression = 'stress_zz*${{k_yx}}'  # This is Zero for no shear model
             block = ${{all_blocks}}
     [../]
       
@@ -1927,7 +1939,7 @@ class mooseCall(object):
             type = ParsedAux
             variable = initStressY_Y
             coupled_variables = 'stress_zz'
-            expression = 'abs(stress_zz)*${{k_yy}}'  # No shear here as well
+            expression = 'stress_zz*${{k_yy}}'  # No shear here as well
             block = ${{all_blocks}}
     [../]
 
@@ -1935,7 +1947,7 @@ class mooseCall(object):
             type = ParsedAux
             variable = initStressY_Z
             coupled_variables = 'stress_zz'
-            expression = 'abs(stress_zz)*${{k_yz}}'  # This is Zero for no shear model
+            expression = 'stress_zz*${{k_yz}}'  # This is Zero for no shear model
             block = ${{all_blocks}}
     [../]
 
@@ -1943,7 +1955,7 @@ class mooseCall(object):
             type = ParsedAux
             variable = initStressZ_X
             coupled_variables = 'stress_zz'
-            expression = 'abs(stress_zz)*${{k_zx}}'  # This is Zero for no shear model
+            expression = 'stress_zz*${{k_zx}}'  # This is Zero for no shear model
             block = ${{all_blocks}}
     [../]
 
@@ -1951,7 +1963,7 @@ class mooseCall(object):
             type = ParsedAux
             variable = initStressZ_Y
             coupled_variables = 'stress_zz'
-            expression = 'abs(stress_zz)*${{k_zy}}' # No shear here as well
+            expression = 'stress_zz*${{k_zy}}' # No shear here as well
             block = ${{all_blocks}}
     [../]
 
@@ -1959,7 +1971,7 @@ class mooseCall(object):
             type = ParsedAux
             variable = initStressZ_Z
             coupled_variables = 'stress_zz'
-            expression = 'abs(stress_zz)*${{k_zz}}' # No shear here as well
+            expression = 'stress_zz*${{k_zz}}' # No shear here as well
             block = ${{all_blocks}}
     [../]
 
@@ -1980,22 +1992,23 @@ class mooseCall(object):
             variable = normal_x
             component = x
             #3D_default = '0 0 1'
-            block = {self.fault_meshBlocks}
+            block = ${{all_blocks}}
         []
         [ElemeNormal_y]
             type = PorousFlowElementNormal
             variable = normal_y
             component = y
             #3D_default = '0 0 1'
-            block = {self.fault_meshBlocks}
+            block = ${{all_blocks}}
         []
         [ElemNormal_z]
             type = PorousFlowElementNormal
             variable = normal_z
             component = z
             #3D_default = '0 0 1'
-            block = {self.fault_meshBlocks}
+            block = ${{all_blocks}}
         []
+
 
 
         # 9 components for Stress tensor, RankTwo
@@ -2120,68 +2133,62 @@ class mooseCall(object):
             variable = strike_azimuth_deg
             coupled_variables = 'normal_x normal_y'
             expression = '(atan2(-normal_y, normal_x) * 180 / 3.1415 + 360) - floor((atan2(-normal_y, normal_x) * 180 / 3.1415 + 360) / 360) * 360'
-            block = {self.fault_meshBlocks}
         [../]
     
                           # Dip direction x-component
                           [./dip_x]
                             type = ParsedAux
                             variable = dip_x
-                            coupled_variables = 'normal_y strike_z normal_z strike_y'
-                            expression = '(normal_y * strike_z) - (normal_z * strike_y)'
-                            block = {self.fault_meshBlocks}
+                            coupled_variables = 'normal_x normal_y normal_z'
+                            expression = '-1*((-normal_z * normal_x) / sqrt(normal_x^2 + normal_y^2 + normal_z^2))'
                           [../]
 
                           # Dip direction y-component
                           [./dip_y]
                             type = ParsedAux
                             variable = dip_y
-                            coupled_variables = 'normal_z strike_x normal_x strike_z'
-                            expression = '(normal_z * strike_x) - (normal_x * strike_z)'
-                            block = {self.fault_meshBlocks}
+                            coupled_variables = 'normal_x normal_y normal_z'
+                            expression = '-1*((normal_z * normal_y) / sqrt(normal_x^2 + normal_y^2 + normal_z^2))'
                           [../]
 
                           # Dip direction z-component
                           [./dip_z]
                             type = ParsedAux
                             variable = dip_z
-                            coupled_variables = 'normal_x strike_y normal_y strike_x'
-                            expression = '(normal_x * strike_y) - (normal_y * strike_x)'
-                            block = {self.fault_meshBlocks}
+                            coupled_variables = 'normal_x normal_y normal_z'
+                            expression = '-1*((normal_x^2 + normal_y^2) / sqrt(normal_x^2 + normal_y^2 + normal_z^2))'
                           [../]
 
                           # Dip angle (in radians)
                           [./dip_angle_rad]
                             type = ParsedAux
                             variable = dip_angle_rad
-                            coupled_variables = 'dip_z'
-                            expression = 'asin(abs(dip_z))'
-                            block = {self.fault_meshBlocks}
+                            coupled_variables = 'normal_x normal_y normal_z'
+                            expression = 'acos(normal_z / sqrt(normal_x^2 + normal_y^2 + normal_z^2))'
                           [../]
 
                           # Dip angle (in degrees)
                           [./dip_angle_deg]
                             type = ParsedAux
                             variable = dip_angle_deg
-                            coupled_variables = 'dip_z'
-                            expression = 'asin(abs(dip_z)) * 180 / 3.1415926'
-                            block = {self.fault_meshBlocks}
+                            coupled_variables = 'normal_x normal_y normal_z'
+                            expression = 'acos(normal_z / sqrt(normal_x^2 + normal_y^2 + normal_z^2)) * 180 / 3.141592'
                           [../]
   
     # Rake of maximum shear stress vector, x component
       [compute_rake_x]
         type = ParsedAux
         variable = rake_x
-        coupled_variables = 'maxShear_angle_rad strike_x strike_y strike_z dip_x dip_y dip_z'
-        expression = '(cos(maxShear_angle_rad) * (strike_x / sqrt(strike_x^2 + strike_y^2 + strike_z^2))) + (sin(maxShear_angle_rad) * (dip_x / sqrt(dip_x^2 + dip_y^2 + dip_z^2)))'  # Rake x-component
+        coupled_variables = 'maxShear_angle_rad strike_x dip_x'
+        expression = 'cos(maxShear_angle_rad) * strike_x + sin(maxShear_angle_rad) * dip_x'  # Rake x-component
         block = {self.fault_meshBlocks}
       []
     # Rake of maximum shear stress vector, y component  
       [compute_rake_y]
         type = ParsedAux
         variable = rake_y
-        coupled_variables = 'maxShear_angle_rad strike_x strike_y strike_z dip_x dip_y dip_z'
-        expression = '(cos(maxShear_angle_rad) * (strike_y / sqrt(strike_x^2 + strike_y^2 + strike_z^2))) + (sin(maxShear_angle_rad) * (dip_y / sqrt(dip_x^2 + dip_y^2 + dip_z^2)))'  # Rake y-component
+        coupled_variables = 'maxShear_angle_rad strike_y dip_y'
+        expression = 'cos(maxShear_angle_rad) * strike_y + sin(maxShear_angle_rad) * dip_y'  # Rake y-component
         block = {self.fault_meshBlocks}
       []
 
@@ -2189,8 +2196,8 @@ class mooseCall(object):
       [compute_rake_z]
         type = ParsedAux
         variable = rake_z
-        coupled_variables = 'maxShear_angle_rad strike_x strike_y strike_z dip_x dip_y dip_z'
-        expression = '(cos(maxShear_angle_rad) * (strike_z / sqrt(strike_x^2 + strike_y^2 + strike_z^2))) + (sin(maxShear_angle_rad) * (dip_z / sqrt(dip_x^2 + dip_y^2 + dip_z^2)))'  # Rake z-component
+        coupled_variables = 'maxShear_angle_rad strike_z dip_z'
+        expression = 'cos(maxShear_angle_rad) * strike_z + sin(maxShear_angle_rad) * dip_z'  # Rake z-component
         block = {self.fault_meshBlocks}
       []
 
@@ -2312,7 +2319,7 @@ class mooseCall(object):
         #execute_on = timestep_end
         check_boundary_restricted = false
         use_xyzt = true
-        block = {self.fault_meshBlocks}
+        block = ${{all_blocks}}
       [] 
 
     [DilationTendency]
@@ -2323,7 +2330,7 @@ class mooseCall(object):
         #execute_on = timestep_end
         check_boundary_restricted = false
         use_xyzt = true
-        block = {self.fault_meshBlocks} 
+        block = ${{all_blocks}}   
     []
 
     [Fracture_Suscpetibility]
@@ -2333,7 +2340,7 @@ class mooseCall(object):
         coupled_variables = 'shear_stress_surface eff_normal_stress_magnitude'
         check_boundary_restricted = false
         use_xyzt = true
-        block = {self.fault_meshBlocks}
+        block = ${{all_blocks}}
     []
 
     [] # End AuxKernels Block ============================================================================================================
@@ -3844,7 +3851,7 @@ class mooseCall(object):
             postprocessor_list.append(f"""
                     [{faultBlockID}_elem_value_sampler_]
                     type = ElementValueSampler
-                    variable = 'slip_tendency dilation_tendency fracture_suscept normal_x normal_y normal_z stress_xx stress_xy stress_xz stress_yy stress_yz stress_zz dip_angle_deg strike_azimuth_deg maxShear_angle_deg shear_stress_surface eff_normal_stress_magnitude'
+                    variable = 'slip_tendency dilation_tendency fracture_suscept dip_x dip_y dip_z strike_x strike_y strike_z strike_azimuth_deg maxShear_angle_deg shear_stress_surface eff_normal_stress_magnitude'
                     sort_by = id
                     block = '{faultBlockID}'
                     execute_on = 'TIMESTEP_END'
@@ -3973,11 +3980,6 @@ class mooseCall(object):
             out_Block = f"""
             [Outputs]
             {_csv}
-            []
-            """
-        else:
-            out_Block = f"""
-            [Outputs]
             []
             """
         self.outputBlock = out_Block
